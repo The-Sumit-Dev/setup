@@ -23,74 +23,78 @@ export default {
       const fromMatch = rawEmail.match(/^From:\s*(.+)/im);
       let fromAddress = "unknown@sender.com";
       let fromName = "Unknown Sender";
-      
+
       if (fromMatch) {
-         const f = fromMatch[1].trim();
-         const extract = f.match(/(.*)<([^>]+)>/);
-         if (extract) {
-            fromName = extract[1].replace(/"/g, '').trim();
-            fromAddress = extract[2].trim();
-         } else {
-            fromAddress = f;
-            fromName = f;
-         }
+        const f = fromMatch[1].trim();
+        const extract = f.match(/(.*)<([^>]+)>/);
+        if (extract) {
+          fromName = extract[1].replace(/"/g, '').trim();
+          fromAddress = extract[2].trim();
+        } else {
+          fromAddress = f;
+          fromName = f;
+        }
       }
 
       const id = message.headers.get("Message-ID") || Date.now().toString();
 
       function decodePart(fullPartBlock) {
-          const blockMatch = fullPartBlock.match(/^([\s\S]*?)\r?\n\r?\n([\s\S]*)$/);
-          if (!blockMatch) return fullPartBlock;
-          const headers = blockMatch[1];
-          let body = blockMatch[2];
+        const blockMatch = fullPartBlock.match(/^([\s\S]*?)\r?\n\r?\n([\s\S]*)$/);
+        if (!blockMatch) return fullPartBlock;
+        const headers = blockMatch[1];
+        let body = blockMatch[2];
 
-          if (headers.match(/Content-Transfer-Encoding:\s*base64/i)) {
-             try {
-                const b64 = body.replace(/\s+/g, '');
-                const bin = atob(b64);
-                const bytes = new Uint8Array(bin.length);
-                for(let i=0; i<bin.length; i++) bytes[i] = bin.charCodeAt(i);
-                return new TextDecoder('utf-8').decode(bytes);
-             } catch(e) { return body; }
+        if (headers.match(/Content-Transfer-Encoding:\s*base64/i)) {
+          try {
+            const b64 = body.replace(/\s+/g, '');
+            const bin = atob(b64);
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            return new TextDecoder('utf-8').decode(bytes);
+          } catch (e) { return body; }
+        }
+
+        if (headers.match(/Content-Transfer-Encoding:\s*quoted-printable/i) || body.includes('=')) {
+          let bytes = [];
+          for (let i = 0; i < body.length; i++) {
+            if (body[i] === '=' && i + 1 < body.length) {
+              if (body[i + 1] === '\r' || body[i + 1] === '\n') {
+                if (body[i + 1] === '\r' && body[i + 2] === '\n') i += 2;
+                else i += 1;
+                continue;
+              }
+              let hex = body.slice(i + 1, i + 3);
+              if (/^[0-9a-fA-F]{2}$/.test(hex)) {
+                bytes.push(parseInt(hex, 16));
+                i += 2;
+                continue;
+              }
+            }
+            bytes.push(body.charCodeAt(i));
           }
-          
-          if (headers.match(/Content-Transfer-Encoding:\s*quoted-printable/i) || body.includes('=')) {
-             let bytes = [];
-             for (let i = 0; i < body.length; i++) {
-                if (body[i] === '=' && i + 1 < body.length) {
-                  if (body[i+1] === '\r' || body[i+1] === '\n') {
-                    if (body[i+1] === '\r' && body[i+2] === '\n') i += 2;
-                    else i += 1;
-                    continue;
-                  }
-                  let hex = body.slice(i + 1, i + 3);
-                  if (/^[0-9a-fA-F]{2}$/.test(hex)) {
-                    bytes.push(parseInt(hex, 16));
-                    i += 2;
-                    continue;
-                  }
-                }
-                bytes.push(body.charCodeAt(i));
-             }
-             return new TextDecoder('utf-8').decode(new Uint8Array(bytes));
-          }
-          return body;
+          return new TextDecoder('utf-8').decode(new Uint8Array(bytes));
+        }
+        return body;
       }
 
       let bodyPart = "";
       let htmlPart = "";
 
-      const textMatch = rawEmail.match(/(Content-Type:\s*text\/plain[^]*?)(?=\r?\n--[a-zA-Z0-9_\-]+|$)/i);
-      if (textMatch) bodyPart = decodePart(textMatch[1]);
-
-      const htmlMatch = rawEmail.match(/(Content-Type:\s*text\/html[^]*?)(?=\r?\n--[a-zA-Z0-9_\-]+|$)/i);
-      if (htmlMatch) htmlPart = decodePart(htmlMatch[1]);
-
-      if (!bodyPart && !htmlPart) {
-          bodyPart = rawEmail.split(/\r?\n\r?\n/).slice(1).join("\n\n").trim();
+      const blocks = rawEmail.split(/\r?\n--[a-zA-Z0-9_\-\.\=\+]+/);
+      for (const block of blocks) {
+        if (!htmlPart && /Content-Type:\s*text\/html/i.test(block)) {
+          htmlPart = decodePart(block.trimStart());
+        } else if (!bodyPart && /Content-Type:\s*text\/plain/i.test(block)) {
+          bodyPart = decodePart(block.trimStart());
+        }
       }
 
-      const snippet = bodyPart ? bodyPart.replace(/<[^>]*>?/gm, ' ').replace(/\s+/g,' ').slice(0, 160).trim() : "No message text.";
+      if (!bodyPart && !htmlPart) {
+        bodyPart = rawEmail.split(/\r?\n\r?\n/).slice(1).join("\n\n").trim();
+      }
+
+      const snippetSource = bodyPart || (htmlPart ? htmlPart.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '').replace(/<[^>]*>?/gm, ' ') : "");
+      const snippet = snippetSource.replace(/https?:\/\/[^\s]+/g, '').replace(/[<>]/g, '').replace(/\s+/g, ' ').slice(0, 160).trim() || "No message text.";
 
       const emailData = {
         id: id,
@@ -106,11 +110,11 @@ export default {
       // Ensure address is uniformly lowercased for exact matching
       const destAddress = (message.to || "catchall@sumitbuilds.tech").toLowerCase();
       const storageKey = `msg:${destAddress}:${Date.now()}:${id}`;
-      
+
       await env.TEMP_MAIL_KV.put(storageKey, JSON.stringify(emailData), {
-        expirationTtl: 86400 
+        expirationTtl: 86400
       });
-      
+
     } catch (err) {
       console.log("Error processing email: ", err);
     }
@@ -133,7 +137,7 @@ export default {
     if (method === "OPTIONS") return new Response(JSON.stringify({ ok: true }), { headers });
 
     if (!env.TEMP_MAIL_KV) {
-       return new Response(JSON.stringify({ error: "TEMP_MAIL_KV is not bound" }), { status: 500, headers });
+      return new Response(JSON.stringify({ error: "TEMP_MAIL_KV is not bound" }), { status: 500, headers });
     }
 
     try {
@@ -148,7 +152,7 @@ export default {
           const data = await env.TEMP_MAIL_KV.get(key.name, "json");
           if (data) messages.push(data);
         }
-        messages.sort((a,b) => new Date(b.createdAt) - new Date(a.createdAt));
+        messages.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
         return new Response(JSON.stringify({ messages }), { headers });
       }
 
@@ -168,13 +172,13 @@ export default {
       if (method === "POST" && url.pathname === "/api/messages/purge") {
         let reqAddress = address;
         try {
-            const bodyStr = await request.text();
-            if (bodyStr) {
-                const b = JSON.parse(bodyStr);
-                if (b.address) reqAddress = b.address;
-            }
-        } catch(e) {}
-        
+          const bodyStr = await request.text();
+          if (bodyStr) {
+            const b = JSON.parse(bodyStr);
+            if (b.address) reqAddress = b.address;
+          }
+        } catch (e) { }
+
         if (!reqAddress) return new Response(JSON.stringify({ ok: true }), { headers });
 
         const reqPrefix = `msg:${reqAddress.toLowerCase()}:`;
@@ -186,31 +190,31 @@ export default {
       }
 
       if (method === "GET" && (url.pathname === "/api/account" || url.pathname === "/health")) {
-        return new Response(JSON.stringify({ 
-            address: "worker-active@sumitbuilds.tech", 
-            mode: "cloudflare", 
-            createdAt: new Date().toISOString() 
+        return new Response(JSON.stringify({
+          address: "worker-active@sumitbuilds.tech",
+          mode: "cloudflare",
+          createdAt: new Date().toISOString()
         }), { headers });
       }
 
       if (method === "POST" && (url.pathname === "/api/account/new" || url.pathname === "/api/account/custom")) {
         let prefix = Math.random().toString(36).substring(2, 10);
         try {
-            const bodyStr = await request.text();
-            if (bodyStr) {
-                const b = JSON.parse(bodyStr);
-                if (b.prefix) prefix = b.prefix;
-            }
-        } catch(e) {}
-        
-        return new Response(JSON.stringify({ 
-            address: `${prefix}@sumitbuilds.tech`, 
-            mode: "cloudflare", 
-            createdAt: new Date().toISOString() 
+          const bodyStr = await request.text();
+          if (bodyStr) {
+            const b = JSON.parse(bodyStr);
+            if (b.prefix) prefix = b.prefix;
+          }
+        } catch (e) { }
+
+        return new Response(JSON.stringify({
+          address: `${prefix}@sumitbuilds.tech`,
+          mode: "cloudflare",
+          createdAt: new Date().toISOString()
         }), { headers });
       }
-      
-    } catch(err) {
+
+    } catch (err) {
       return new Response(JSON.stringify({ error: err.message }), { status: 500, headers });
     }
 
