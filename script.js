@@ -15,13 +15,13 @@ let inboxMessages = [];
 
 function getBrandIcon(fromAddress) {
     const fallbackStr = `
-        <div class="w-full h-full bg-zinc-700 flex items-center justify-center text-white">
+        <div class="w-full h-full bg-gray-100 flex items-center justify-center text-gray-800">
             <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
                 <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path>
                 <polyline points="22,6 12,13 2,6"></polyline>
             </svg>
         </div>`;
-    return `<div class="w-10 h-10 rounded-xl bg-zinc-700 overflow-hidden flex items-center justify-center shrink-0 shadow-lg border border-white/10">${fallbackStr}</div>`;
+    return `<div class="w-10 h-10 rounded-xl bg-gray-100 overflow-hidden flex items-center justify-center shrink-0 shadow-sm border border-gray-200">${fallbackStr}</div>`;
 }
 
 function showNotification(text) {
@@ -85,19 +85,19 @@ function renderInbox() {
                 <div class="md:col-span-4 flex items-center gap-4">
                     ${getBrandIcon(message.rawAddress)}
                     <div class="flex flex-col min-w-0">
-                        <span class="font-bold text-sm text-white">${escapeHtml(message.sender)}</span>
+                        <span class="font-bold text-sm text-gray-900">${escapeHtml(message.sender)}</span>
                         <span class="text-[10px] text-gray-500 font-bold uppercase tracking-tight truncate">${escapeHtml(message.from)}</span>
                     </div>
-                    <span class="md:hidden ml-auto text-[10px] text-gray-600 font-bold">${escapeHtml(message.time)}</span>
+                    <span class="md:hidden ml-auto text-[10px] text-gray-500 font-black">${escapeHtml(message.time)}</span>
                 </div>
-                <div class="md:col-span-8 flex justify-between items-start mt-2 md:mt-0">
-                    <div class="flex flex-col pr-4">
-                        <span class="font-bold text-sm text-gray-200 mb-0.5">${escapeHtml(message.subject)}</span>
-                        <span class="text-xs text-gray-500 line-clamp-1 md:line-clamp-2 leading-relaxed">${escapeHtml(message.snippet)}</span>
+                <div class="md:col-span-8 flex justify-between items-start mt-2 md:mt-0 min-w-0">
+                    <div class="flex flex-col pr-4 min-w-0 flex-1">
+                        <span class="font-bold text-sm text-gray-700 mb-0.5 truncate">${escapeHtml(message.subject)}</span>
+                        <span class="text-xs text-gray-500 line-clamp-1 md:line-clamp-2 leading-relaxed break-all">${escapeHtml(message.snippet)}</span>
                     </div>
                     <div class="hidden md:flex items-center gap-4 shrink-0 pt-1">
-                        <span class="text-[10px] text-gray-500 font-black">${escapeHtml(message.time)}</span>
-                        <svg class="text-gray-700 group-hover:text-white transition-colors" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                        <span class="text-[10px] text-gray-500 font-black whitespace-nowrap shrink-0">${escapeHtml(message.time)}</span>
+                        <svg class="text-gray-400 group-hover:text-gray-900 transition-colors shrink-0" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
                             <polyline points="9 18 15 12 9 6"></polyline>
                         </svg>
                     </div>
@@ -134,6 +134,7 @@ async function ensureAccount() {
             const state = JSON.parse(localSession);
             const ageMs = Date.now() - new Date(state.createdAt).getTime();
             if (ageMs > 24 * 60 * 60 * 1000) {
+                await api('/api/messages/purge', { method: 'POST', body: JSON.stringify({ address: state.address }) }).catch(() => {});
                 localStorage.removeItem('tempmail_session');
             } else {
                 emailInput.value = state.address;
@@ -157,6 +158,7 @@ async function ensureAccount() {
 
 async function newEmail() {
     try {
+        await api('/api/messages/purge', { method: 'POST', body: JSON.stringify({ address: emailInput.value }) }).catch(() => {});
         const created = await api('/api/account/new', { method: 'POST', body: JSON.stringify({}) });
         localStorage.setItem('tempmail_session', JSON.stringify(created));
         emailInput.value = created.address;
@@ -176,6 +178,7 @@ async function setCustomEmail() {
     }
 
     try {
+        await api('/api/messages/purge', { method: 'POST', body: JSON.stringify({ address: emailInput.value }) }).catch(() => {});
         const created = await api('/api/account/custom', {
             method: 'POST',
             body: JSON.stringify({ prefix })
@@ -229,21 +232,37 @@ function openMessage(messageId) {
             return;
         }
         
-        const senderName = detail.sender;
-        modalFrom.innerText = senderName;
+        modalFrom.innerText = detail.sender;
         modalSubject.innerText = detail.subject || 'No Subject';
         modalTime.innerText = detail.time;
         
-        const rawBody = detail.rawText || '';
-        const body = rawBody.trim() || (detail.rawHtml || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim() || 'No message body available.';
-        modalBody.innerText = body;
+        const rawHtml = detail.rawHtml || '';
+        const rawText = detail.rawText || '';
+
+        modalBody.innerHTML = ''; 
+        
+        if (rawHtml.trim()) {
+            const iframe = document.createElement('iframe');
+            iframe.style.width = '100%';
+            iframe.style.height = '70vh';
+            iframe.style.border = 'none';
+            iframe.style.display = 'block';
+            modalBody.appendChild(iframe);
+            iframe.srcdoc = rawHtml;
+        } else {
+            const div = document.createElement('div');
+            div.className = 'p-8 text-base text-gray-800 leading-relaxed whitespace-pre-wrap font-sans';
+            div.innerText = rawText.trim() || 'No message body available.';
+            modalBody.appendChild(div);
+        }
 
         const smartBtn = document.getElementById('modal-smart-btn');
         smartBtn.classList.add('hidden');
         smartBtn.onclick = null;
         
-        const linkMatch = rawBody.match(/https?:\/\/[^\s"'>]+/);
-        const codeMatch = rawBody.match(/\b(\d{4,8})\b/);
+        const fallbackTextForLinks = rawText || rawHtml;
+        const linkMatch = fallbackTextForLinks.match(/https?:\/\/[^\s"'>]+/);
+        const codeMatch = fallbackTextForLinks.match(/\b(\d{4,8})\b/);
         
         if (linkMatch) {
             smartBtn.classList.remove('hidden');
